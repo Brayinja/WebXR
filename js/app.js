@@ -1,95 +1,259 @@
-import * as THREE from '../../libs/three/three.module.js';
-import { VRButton } from '../../libs/three/jsm/VRButton.js';
-import { XRControllerModelFactory } from '../../libs/three/jsm/XRControllerModelFactory.js';
-import { BoxLineGeometry } from '../../libs/three/jsm/BoxLineGeometry.js';
-import { Stats } from '../../libs/stats.module.js';
-import { OrbitControls } from '../../libs/three/jsm/OrbitControls.js';
+var APP = {
 
+	Player: function () {
 
-class App{
-	constructor(){
-		const container = document.createElement( 'div' );
-		document.body.appendChild( container );
-        
-        this.clock = new THREE.Clock();
-        
-		this.camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.1, 100 );
-		this.camera.position.set( 0, 1.6, 3 );
-        
-		this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color( 0x505050 );
+		var renderer = new THREE.WebGLRenderer( { antialias: true } );
+		renderer.setPixelRatio( window.devicePixelRatio ); // TODO: Use player.setPixelRatio()
+		renderer.outputEncoding = THREE.sRGBEncoding;
 
-		this.scene.add( new THREE.HemisphereLight( 0x606060, 0x404040 ) );
+		var loader = new THREE.ObjectLoader();
+		var camera, scene;
 
-        const light = new THREE.DirectionalLight( 0xffffff );
-        light.position.set( 1, 1, 1 ).normalize();
-		this.scene.add( light );
-			
-		this.renderer = new THREE.WebGLRenderer({ antialias: true } );
-		this.renderer.setPixelRatio( window.devicePixelRatio );
-		this.renderer.setSize( window.innerWidth, window.innerHeight );
-        this.renderer.outputEncoding = THREE.sRGBEncoding;
-        
-		container.appendChild( this.renderer.domElement );
-        
-        this.controls = new OrbitControls( this.camera, this.renderer.domElement );
-        this.controls.target.set(0, 1.6, 0);
-        this.controls.update();
-        
-        this.stats = new Stats();
-        container.appendChild( this.stats.dom );
-        
-        this.initScene();
-        this.setupXR();
-        
-        window.addEventListener('resize', this.resize.bind(this) );
-        
-        this.renderer.setAnimationLoop( this.render.bind(this) );
-	}	
-    
-    random( min, max ){
-        return Math.random() * (max-min) + min;
-    }
-    
-    initScene(){
-        this.radius = 0.08;
+		var vrButton = VRButton.createButton( renderer ); // eslint-disable-line no-undef
 
-        this.room = new THREE.LineSegments(
-            new BoxLineGeometry(6,6,6,10,10,10),
-            new THREE.LineBasicMaterial({color:0x808080})
-        );
-        this.room.geometry.translate(0,3,0);
-        this.scene.add(this.room);
+		var events = {};
 
-        const geometry = new THREE.IcosahedronBufferGeometry(this.radius,2);
+		var dom = document.createElement( 'div' );
+		dom.appendChild( renderer.domElement );
 
-        for (let i = 0 ; i < 200 ; i++){
+		this.dom = dom;
 
-            const object = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({color: Math.random() * 0x00FF00}));
+		this.width = 500;
+		this.height = 500;
 
-            object.position.x = this.random(-2 , 2);
-            object.position.y = this.random(2 , 4);
-            object.position.z = this.random(-2 , 2);
-            
-            this.room.add(object);
-        }
-    }
-    
-    setupXR(){
-        this.renderer.xr.enabled = true;
-        document.body.appendChild(VRButton.createButton(this.renderer));
-    }
-    
-    resize(){
-        this.camera.aspect = window.innerWidth / window.innerHeight;
-        this.camera.updateProjectionMatrix();
-        this.renderer.setSize( window.innerWidth, window.innerHeight );  
-    }
-    
-	render( ) {   
-        this.stats.update();
-        this.renderer.render( this.scene, this.camera );
-    }
-}
+		this.load = function ( json ) {
 
-export { App };
+			var project = json.project;
+
+			if ( project.vr !== undefined ) renderer.xr.enabled = project.vr;
+			if ( project.shadows !== undefined ) renderer.shadowMap.enabled = project.shadows;
+			if ( project.shadowType !== undefined ) renderer.shadowMap.type = project.shadowType;
+			if ( project.toneMapping !== undefined ) renderer.toneMapping = project.toneMapping;
+			if ( project.toneMappingExposure !== undefined ) renderer.toneMappingExposure = project.toneMappingExposure;
+			if ( project.physicallyCorrectLights !== undefined ) renderer.physicallyCorrectLights = project.physicallyCorrectLights;
+
+			this.setScene( loader.parse( json.scene ) );
+			this.setCamera( loader.parse( json.camera ) );
+
+			events = {
+				init: [],
+				start: [],
+				stop: [],
+				keydown: [],
+				keyup: [],
+				pointerdown: [],
+				pointerup: [],
+				pointermove: [],
+				update: []
+			};
+
+			var scriptWrapParams = 'player,renderer,scene,camera';
+			var scriptWrapResultObj = {};
+
+			for ( var eventKey in events ) {
+
+				scriptWrapParams += ',' + eventKey;
+				scriptWrapResultObj[ eventKey ] = eventKey;
+
+			}
+
+			var scriptWrapResult = JSON.stringify( scriptWrapResultObj ).replace( /\"/g, '' );
+
+			for ( var uuid in json.scripts ) {
+
+				var object = scene.getObjectByProperty( 'uuid', uuid, true );
+
+				if ( object === undefined ) {
+
+					console.warn( 'APP.Player: Script without object.', uuid );
+					continue;
+
+				}
+
+				var scripts = json.scripts[ uuid ];
+
+				for ( var i = 0; i < scripts.length; i ++ ) {
+
+					var script = scripts[ i ];
+
+					var functions = ( new Function( scriptWrapParams, script.source + '\nreturn ' + scriptWrapResult + ';' ).bind( object ) )( this, renderer, scene, camera );
+
+					for ( var name in functions ) {
+
+						if ( functions[ name ] === undefined ) continue;
+
+						if ( events[ name ] === undefined ) {
+
+							console.warn( 'APP.Player: Event type not supported (', name, ')' );
+							continue;
+
+						}
+
+						events[ name ].push( functions[ name ].bind( object ) );
+
+					}
+
+				}
+
+			}
+
+			dispatch( events.init, arguments );
+
+		};
+
+		this.setCamera = function ( value ) {
+
+			camera = value;
+			camera.aspect = this.width / this.height;
+			camera.updateProjectionMatrix();
+
+		};
+
+		this.setScene = function ( value ) {
+
+			scene = value;
+
+		};
+
+		this.setPixelRatio = function ( pixelRatio ) {
+
+			renderer.setPixelRatio( pixelRatio );
+
+		};
+
+		this.setSize = function ( width, height ) {
+
+			this.width = width;
+			this.height = height;
+
+			if ( camera ) {
+
+				camera.aspect = this.width / this.height;
+				camera.updateProjectionMatrix();
+
+			}
+
+			renderer.setSize( width, height );
+
+		};
+
+		function dispatch( array, event ) {
+
+			for ( var i = 0, l = array.length; i < l; i ++ ) {
+
+				array[ i ]( event );
+
+			}
+
+		}
+
+		var time, startTime, prevTime;
+
+		function animate() {
+
+			time = performance.now();
+
+			try {
+
+				dispatch( events.update, { time: time - startTime, delta: time - prevTime } );
+
+			} catch ( e ) {
+
+				console.error( ( e.message || e ), ( e.stack || '' ) );
+
+			}
+
+			renderer.render( scene, camera );
+
+			prevTime = time;
+
+		}
+
+		this.play = function () {
+
+			if ( renderer.xr.enabled ) dom.append( vrButton );
+
+			startTime = prevTime = performance.now();
+
+			document.addEventListener( 'keydown', onKeyDown );
+			document.addEventListener( 'keyup', onKeyUp );
+			document.addEventListener( 'pointerdown', onPointerDown );
+			document.addEventListener( 'pointerup', onPointerUp );
+			document.addEventListener( 'pointermove', onPointerMove );
+
+			dispatch( events.start, arguments );
+
+			renderer.setAnimationLoop( animate );
+
+		};
+
+		this.stop = function () {
+
+			if ( renderer.xr.enabled ) vrButton.remove();
+
+			document.removeEventListener( 'keydown', onKeyDown );
+			document.removeEventListener( 'keyup', onKeyUp );
+			document.removeEventListener( 'pointerdown', onPointerDown );
+			document.removeEventListener( 'pointerup', onPointerUp );
+			document.removeEventListener( 'pointermove', onPointerMove );
+
+			dispatch( events.stop, arguments );
+
+			renderer.setAnimationLoop( null );
+
+		};
+
+		this.render = function ( time ) {
+
+			dispatch( events.update, { time: time * 1000, delta: 0 /* TODO */ } );
+
+			renderer.render( scene, camera );
+
+		};
+
+		this.dispose = function () {
+
+			renderer.dispose();
+
+			camera = undefined;
+			scene = undefined;
+
+		};
+
+		//
+
+		function onKeyDown( event ) {
+
+			dispatch( events.keydown, event );
+
+		}
+
+		function onKeyUp( event ) {
+
+			dispatch( events.keyup, event );
+
+		}
+
+		function onPointerDown( event ) {
+
+			dispatch( events.pointerdown, event );
+
+		}
+
+		function onPointerUp( event ) {
+
+			dispatch( events.pointerup, event );
+
+		}
+
+		function onPointerMove( event ) {
+
+			dispatch( events.pointermove, event );
+
+		}
+
+	}
+
+};
+
+export { APP };
